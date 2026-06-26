@@ -383,26 +383,43 @@ async function cargarPDF(medida) {
   }
 }
 
-let tareaRenderActual = null;
+// En lugar de cancelar renders de PDF.js en curso (lo cual demostro ser
+// poco confiable: el canvas puede quedar marcado como "ocupado" incluso
+// despues de cancelar y esperar la promesa, colgando el siguiente render
+// para siempre), se usa un mutex simple: si llega una solicitud de render
+// mientras otra esta en curso, se guarda solo la MAS RECIENTE como
+// pendiente y se ejecuta automaticamente apenas el render actual termine.
+// Asi nunca se llama page.render() dos veces sobre el mismo canvas a la vez.
+let renderEnCurso = false;
+let renderPendiente = null;
 
 async function renderizarPagina(numPagina, recalcularAjuste) {
+  if (renderEnCurso) {
+    renderPendiente = {
+      numPagina: numPagina,
+      recalcularAjuste: recalcularAjuste || (renderPendiente ? renderPendiente.recalcularAjuste : false)
+    };
+    return;
+  }
+
+  renderEnCurso = true;
+  try {
+    await renderizarPaginaInterno(numPagina, recalcularAjuste);
+  } finally {
+    renderEnCurso = false;
+    if (renderPendiente) {
+      const siguiente = renderPendiente;
+      renderPendiente = null;
+      renderizarPagina(siguiente.numPagina, siguiente.recalcularAjuste);
+    }
+  }
+}
+
+async function renderizarPaginaInterno(numPagina, recalcularAjuste) {
   if (!pdfDocActual) return;
   const page = await pdfDocActual.getPage(numPagina);
   const canvas = document.getElementById('pdf-canvas');
   const ctx = canvas.getContext('2d');
-
-  // Si ya hay un render en curso sobre este mismo canvas (por ejemplo, el
-  // usuario hizo clic en zoom varias veces antes de que terminara el
-  // render anterior), hay que cancelarlo y ESPERAR a que esa cancelacion
-  // se resuelva antes de reutilizar el contexto del canvas. PDF.js no
-  // libera el canvas de forma sincronica al llamar cancel(): si se llama
-  // page.render() de nuevo sin esperar, el nuevo render queda colgado
-  // indefinidamente (la promesa nunca se resuelve ni se rechaza).
-  if (tareaRenderActual) {
-    const tareaAnterior = tareaRenderActual;
-    try { tareaAnterior.cancel(); } catch (e) { /* ya finalizado, ignorar */ }
-    try { await tareaAnterior.promise; } catch (e) { /* cancelacion esperada, ignorar */ }
-  }
 
   if (recalcularAjuste) {
     const anchoDisponible = document.getElementById('visor-wrap').clientWidth - 20;
@@ -414,20 +431,7 @@ async function renderizarPagina(numPagina, recalcularAjuste) {
   canvas.width = viewport.width;
   canvas.height = viewport.height;
 
-  const tarea = page.render({ canvasContext: ctx, viewport: viewport });
-  tareaRenderActual = tarea;
-
-  try {
-    await tarea.promise;
-  } catch (err) {
-    if (err && err.name === 'RenderingCancelledException') {
-      // Una renderización más nueva reemplazó a esta; no es un error real.
-      return;
-    }
-    throw err;
-  }
-
-  if (tareaRenderActual === tarea) tareaRenderActual = null;
+  await page.render({ canvasContext: ctx, viewport: viewport }).promise;
 
   document.getElementById('info-pagina').textContent = 'Página ' + numPagina + ' de ' + pdfDocActual.numPages;
   document.getElementById('btn-prev').disabled = numPagina <= 1;
