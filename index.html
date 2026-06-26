@@ -391,6 +391,19 @@ async function renderizarPagina(numPagina, recalcularAjuste) {
   const canvas = document.getElementById('pdf-canvas');
   const ctx = canvas.getContext('2d');
 
+  // Si ya hay un render en curso sobre este mismo canvas (por ejemplo, el
+  // usuario hizo clic en zoom varias veces antes de que terminara el
+  // render anterior), hay que cancelarlo y ESPERAR a que esa cancelacion
+  // se resuelva antes de reutilizar el contexto del canvas. PDF.js no
+  // libera el canvas de forma sincronica al llamar cancel(): si se llama
+  // page.render() de nuevo sin esperar, el nuevo render queda colgado
+  // indefinidamente (la promesa nunca se resuelve ni se rechaza).
+  if (tareaRenderActual) {
+    const tareaAnterior = tareaRenderActual;
+    try { tareaAnterior.cancel(); } catch (e) { /* ya finalizado, ignorar */ }
+    try { await tareaAnterior.promise; } catch (e) { /* cancelacion esperada, ignorar */ }
+  }
+
   if (recalcularAjuste) {
     const anchoDisponible = document.getElementById('visor-wrap').clientWidth - 20;
     escalaAjuste = Math.max(anchoDisponible / page.getViewport({ scale: 1 }).width, 0.1) * 1.5;
@@ -400,14 +413,6 @@ async function renderizarPagina(numPagina, recalcularAjuste) {
 
   canvas.width = viewport.width;
   canvas.height = viewport.height;
-
-  // Si ya hay un render en curso sobre este mismo canvas (por ejemplo, el
-  // usuario hizo clic en zoom antes de que terminara el render anterior),
-  // hay que cancelarlo: PDF.js no permite dos render() simultáneos sobre
-  // el mismo canvas y lanza una excepción no controlada si se intenta.
-  if (tareaRenderActual) {
-    try { tareaRenderActual.cancel(); } catch (e) { /* ya finalizado, ignorar */ }
-  }
 
   const tarea = page.render({ canvasContext: ctx, viewport: viewport });
   tareaRenderActual = tarea;
