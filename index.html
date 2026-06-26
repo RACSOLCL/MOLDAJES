@@ -383,6 +383,8 @@ async function cargarPDF(medida) {
   }
 }
 
+let tareaRenderActual = null;
+
 async function renderizarPagina(numPagina, recalcularAjuste) {
   if (!pdfDocActual) return;
   const page = await pdfDocActual.getPage(numPagina);
@@ -399,7 +401,28 @@ async function renderizarPagina(numPagina, recalcularAjuste) {
   canvas.width = viewport.width;
   canvas.height = viewport.height;
 
-  await page.render({ canvasContext: ctx, viewport: viewport }).promise;
+  // Si ya hay un render en curso sobre este mismo canvas (por ejemplo, el
+  // usuario hizo clic en zoom antes de que terminara el render anterior),
+  // hay que cancelarlo: PDF.js no permite dos render() simultáneos sobre
+  // el mismo canvas y lanza una excepción no controlada si se intenta.
+  if (tareaRenderActual) {
+    try { tareaRenderActual.cancel(); } catch (e) { /* ya finalizado, ignorar */ }
+  }
+
+  const tarea = page.render({ canvasContext: ctx, viewport: viewport });
+  tareaRenderActual = tarea;
+
+  try {
+    await tarea.promise;
+  } catch (err) {
+    if (err && err.name === 'RenderingCancelledException') {
+      // Una renderización más nueva reemplazó a esta; no es un error real.
+      return;
+    }
+    throw err;
+  }
+
+  if (tareaRenderActual === tarea) tareaRenderActual = null;
 
   document.getElementById('info-pagina').textContent = 'Página ' + numPagina + ' de ' + pdfDocActual.numPages;
   document.getElementById('btn-prev').disabled = numPagina <= 1;
