@@ -88,20 +88,26 @@
     background:#eef0f3;
     border-radius:8px;
     padding:10px;
+    touch-action:pinch-zoom;
   }
   #pdf-canvas{
-    max-width:100%;
     border:1px solid var(--gris-borde);
     background:#fff;
     box-shadow:0 1px 4px rgba(0,0,0,0.08);
   }
   .controles-pdf{
     display:flex;
+    flex-wrap:wrap;
     align-items:center;
     justify-content:center;
-    gap:14px;
+    gap:16px;
     margin:12px 0 0;
     font-size:0.9rem;
+  }
+  .grupo-controles{
+    display:flex;
+    align-items:center;
+    gap:8px;
   }
   .controles-pdf button{
     border:1px solid var(--azul-claro);
@@ -110,6 +116,8 @@
     border-radius:6px;
     padding:5px 12px;
     cursor:pointer;
+    font-size:0.95rem;
+    line-height:1.2;
   }
   .controles-pdf button:hover{
     background:#eaf1f6;
@@ -117,6 +125,12 @@
   .controles-pdf button:disabled{
     opacity:0.4;
     cursor:default;
+  }
+  #info-zoom{
+    min-width:48px;
+    text-align:center;
+    font-weight:600;
+    color:var(--azul);
   }
   .tabla-scroll{
     width:100%;
@@ -194,9 +208,17 @@
       <canvas id="pdf-canvas" style="display:none;"></canvas>
     </div>
     <div class="controles-pdf" id="controles-pdf" style="display:none;">
-      <button id="btn-prev">&laquo; Anterior</button>
-      <span id="info-pagina"></span>
-      <button id="btn-next">Siguiente &raquo;</button>
+      <div class="grupo-controles">
+        <button id="btn-prev" type="button">&laquo; Anterior</button>
+        <span id="info-pagina"></span>
+        <button id="btn-next" type="button">Siguiente &raquo;</button>
+      </div>
+      <div class="grupo-controles">
+        <button id="btn-zoom-out" type="button" title="Alejar">&minus;</button>
+        <span id="info-zoom">100%</span>
+        <button id="btn-zoom-in" type="button" title="Acercar">&plus;</button>
+        <button id="btn-zoom-reset" type="button" title="Ajustar al ancho disponible">Ajustar al ancho</button>
+      </div>
     </div>
   </section>
 
@@ -222,6 +244,11 @@ const PDFS_BASE64 = {"8.70 m": "JVBERi0xLjcKJd6tvu8KMyAwIG9iago8PCAgL0xlbmd0aCA2
 let pdfDocActual = null;
 let paginaActual = 1;
 let medidaActual = null;
+let escalaAjuste = 1;   // escala calculada para encajar el plano al ancho disponible
+let zoomFactor = 1;     // factor de zoom manual aplicado sobre escalaAjuste
+const ZOOM_MIN = 0.5;
+const ZOOM_MAX = 5;
+const ZOOM_PASO = 1.25;
 
 // ===================== UTILIDADES =====================
 function base64ToUint8Array(base64) {
@@ -343,10 +370,11 @@ async function cargarPDF(medida) {
     const pdf = await pdfjsLib.getDocument({ data: bytes }).promise;
     pdfDocActual = pdf;
     paginaActual = 1;
+    zoomFactor = 1;
     estadoInicial.style.display = 'none';
     canvas.style.display = 'inline-block';
-    controles.style.display = pdf.numPages > 1 ? 'flex' : 'none';
-    await renderizarPagina(paginaActual);
+    controles.style.display = 'flex';
+    await renderizarPagina(paginaActual, true);
   } catch (err) {
     estadoInicial.style.display = 'block';
     estadoInicial.textContent = 'Error al cargar el plano: ' + err.message;
@@ -355,14 +383,18 @@ async function cargarPDF(medida) {
   }
 }
 
-async function renderizarPagina(numPagina) {
+async function renderizarPagina(numPagina, recalcularAjuste) {
   if (!pdfDocActual) return;
   const page = await pdfDocActual.getPage(numPagina);
   const canvas = document.getElementById('pdf-canvas');
   const ctx = canvas.getContext('2d');
 
-  const escalaBase = Math.min(2, (document.getElementById('visor-wrap').clientWidth - 20) / page.getViewport({ scale: 1 }).width);
-  const viewport = page.getViewport({ scale: Math.max(escalaBase, 0.5) * 1.5 });
+  if (recalcularAjuste) {
+    const anchoDisponible = document.getElementById('visor-wrap').clientWidth - 20;
+    escalaAjuste = Math.max(anchoDisponible / page.getViewport({ scale: 1 }).width, 0.1) * 1.5;
+  }
+
+  const viewport = page.getViewport({ scale: escalaAjuste * zoomFactor });
 
   canvas.width = viewport.width;
   canvas.height = viewport.height;
@@ -372,6 +404,9 @@ async function renderizarPagina(numPagina) {
   document.getElementById('info-pagina').textContent = 'Página ' + numPagina + ' de ' + pdfDocActual.numPages;
   document.getElementById('btn-prev').disabled = numPagina <= 1;
   document.getElementById('btn-next').disabled = numPagina >= pdfDocActual.numPages;
+  document.getElementById('info-zoom').textContent = Math.round(zoomFactor * 100) + '%';
+  document.getElementById('btn-zoom-out').disabled = zoomFactor <= ZOOM_MIN + 0.001;
+  document.getElementById('btn-zoom-in').disabled = zoomFactor >= ZOOM_MAX - 0.001;
 }
 
 document.getElementById('btn-prev').addEventListener('click', () => {
@@ -386,6 +421,18 @@ document.getElementById('btn-next').addEventListener('click', () => {
     renderizarPagina(paginaActual);
   }
 });
+document.getElementById('btn-zoom-in').addEventListener('click', () => {
+  zoomFactor = Math.min(ZOOM_MAX, zoomFactor * ZOOM_PASO);
+  renderizarPagina(paginaActual);
+});
+document.getElementById('btn-zoom-out').addEventListener('click', () => {
+  zoomFactor = Math.max(ZOOM_MIN, zoomFactor / ZOOM_PASO);
+  renderizarPagina(paginaActual);
+});
+document.getElementById('btn-zoom-reset').addEventListener('click', () => {
+  zoomFactor = 1;
+  renderizarPagina(paginaActual, true);
+});
 
 // ===================== INICIO =====================
 // El selector se construye siempre primero y de forma aislada (try/catch),
@@ -396,7 +443,7 @@ try {
   console.error('Error al construir el selector:', e);
 }
 window.addEventListener('resize', () => {
-  if (pdfDocActual) renderizarPagina(paginaActual);
+  if (pdfDocActual) renderizarPagina(paginaActual, zoomFactor === 1);
 });
 </script>
 
